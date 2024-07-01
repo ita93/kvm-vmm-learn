@@ -91,6 +91,8 @@ static void vm_init_cpu_id(vm_t *g) {
 }
 
 int vm_init(vm_t *g) {
+  printf("Initializing VM\n");
+
   if ((g->kvm_fd = open("/dev/kvm", O_RDWR)) < 0)
     return throw_err("Failed to open /dev/kvm");
 
@@ -218,6 +220,7 @@ int main(int argc, char *argv[]) {
   if (argc != 2)
     return fprintf(stderr, "Usage: %s [filename]\n", argv[0]);
 
+  printf("Start vm with bzimage: %s\n", argv[1]);
   vm_t vm;
   if (vm_init(&vm) < 0)
     return throw_err("Failed to initialize guest vm");
@@ -225,6 +228,7 @@ int main(int argc, char *argv[]) {
   if (vm_load(&vm, argv[1]) < 0)
     return throw_err("Failed to load guest image");
 
+  printf("Running VM\n");
   vm_run(&vm);
   vm_exit(&vm);
 

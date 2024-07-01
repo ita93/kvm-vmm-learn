@@ -1,2 +1,1 @@
-kvm-cmd
-kvm-cmd.o
+build/

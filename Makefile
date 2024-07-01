@@ -3,7 +3,9 @@ CFLAGS = -O2
 CFLAGS += -Wall -std=gnu99
 CFLAGS += -g
 
-BIN = kvm-cmd
+OUT ?= build
+
+BIN = $(OUT)/kvm-cmd
 
 all: $(BIN)
 
@@ -17,16 +19,17 @@ else
 endif
 
 OBJS := kvm-cmd.o
-deps := $(OBJS:%.o=.%.o.d)
+OBJS := $(addprefix $(OUT)/,$(OBJS))
+deps := $(OBJS:%.o=%.o.d)
 
-kvm-cmd: $(OBJS)
+$(BIN): $(OBJS)
 	$(VECHO) "  LD\t$@\n"
 	$(Q)$(CC) $(LDFLAGS) -o $@ $^
 
-%.o: %.c
-	@mkdir -p .$(DUT_DIR)
+$(OUT)/%.o: %.c
+	@mkdir -p .$(OUT)
 	$(VECHO) "  CC\t$@\n"
-	$(Q)$(CC) -o $@ $(CFLAGS) -c -MMD -MF .$@.d $<
+	$(Q)$(CC) -o $@ $(CFLAGS) -c -MMD -MF $@.d $<
 
 clean:
 	rm -f $(OBJS) $(deps) $(BIN)
