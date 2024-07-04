@@ -5,7 +5,7 @@
 #include <linux/kvm.h>
 #include <linux/kvm_para.h>
 
-#include <errno.h>
+#include <asm/e820.h>
 #include <fcntl.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -18,23 +18,8 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#define RAM_SIZE (1 << 30) // 1GB of ram
-
-typedef struct vm {
-  int kvm_fd, vm_fd, vcpu_fd; // file descriptors
-  void *mem;
-} vm_t;
-
-static int throw_err(const char *fmt, ...) {
-  // va_list, va_start, va_end are the handlers of variable list
-  // it is the ...
-  va_list args;
-  va_start(args, fmt);
-  vfprintf(stderr, fmt, args); // vfprint : print on an variable list
-  fprintf(stderr, ", errno: %d\n", errno);
-  va_end(args);
-  return -1;
-}
+#include "err.h"
+#include "vm.h"
 
 // Registers initialization
 static int vm_init_regs(vm_t *g) {
@@ -142,7 +127,7 @@ int vm_init(vm_t *g) {
   return 0;
 }
 
-int vm_load(vm_t *g, const char *image_path) {
+int vm_load_image(vm_t *g, const char *image_path) {
   int fd = open(image_path, O_RDONLY);
   if (fd < 0)
     return 1;
@@ -166,8 +151,6 @@ int vm_load(vm_t *g, const char *image_path) {
 
   boot->hdr.vid_mode = 0xFFFF; // VGA
   boot->hdr.type_of_loader = 0xFF;
-  boot->hdr.ramdisk_size = 0x0; // NO initramfs at this moment
-  boot->hdr.ramdisk_size = 0x0;
   boot->hdr.loadflags |= CAN_USE_HEAP | 0x01 | KEEP_SEGMENTS;
   boot->hdr.heap_end_ptr = 0xFE00;
   boot->hdr.ext_loader_ver = 0x0;
@@ -175,6 +158,60 @@ int vm_load(vm_t *g, const char *image_path) {
   memset(cmdline, 0, boot->hdr.cmdline_size);
   memcpy(cmdline, "console=ttyS0", 14);
   memmove(kernel, (char *)data + setupsz, datasz - setupsz);
+
+  // Setup E820 memory table to send the memory address information to initrd
+
+  unsigned int idx = 0;
+  boot->e820_table[idx] = (struct boot_e820_entry){
+      .addr = 0x0,
+      .size = ISA_START_ADDRESS - 1,
+      .type = E820_RAM,
+  };
+
+  boot->e820_table[idx++] = (struct boot_e820_entry){
+      .addr = ISA_END_ADDRESS,
+      .size = RAM_SIZE - ISA_END_ADDRESS,
+      .type = E820_RAM,
+  };
+
+  boot->e820_entries = idx; // number of idx, (at this point it should be 2)
+
+  return 0;
+}
+
+int vm_load_initrd(vm_t *v, const char *initrd_path) {
+  int fd = open(initrd_path, O_RDONLY);
+  if (fd < 0)
+    return 1;
+
+  struct stat st;
+  fstat(fd, &st);
+  size_t datasz = st.st_size;
+  void *data = mmap(0, datasz, PROT_READ|PROT_WRITE, MAP_PRIVATE, fd, 0);
+  close(fd);
+
+  struct boot_params *boot = (struct boot_params*)((uint8_t*)v->mem + 0x10000);
+  unsigned long addr = boot->hdr.initrd_addr_max & ~0xfffff;
+
+  // Understand this code:
+  // We loaded kernel image to address 0x100000.
+  // This for loop is to find the address that we can copy initrd to.
+  // Start from the highest address, we continue to grown down until we find a slot that can fit the whole initrd image
+  // but it can not overlap with the kernel image
+  for (;;) {
+    if (addr < 0x100000)
+        return throw_err("Not enough memroy for initrd");
+    else if (addr < (RAM_SIZE - datasz))
+        break;
+    addr -= 0x100000;
+  }
+
+  void *initrd = ((uint8_t *)v->mem) + addr;
+  memset(initrd, 0, datasz);
+  memmove(initrd, data, datasz);
+
+  boot->hdr.ramdisk_image = addr;
+  boot->hdr.ramdisk_size = datasz;
 
   return 0;
 }
@@ -214,23 +251,4 @@ int vm_run(vm_t *g) {
       return -1;
     }
   }
-}
-
-int main(int argc, char *argv[]) {
-  if (argc != 2)
-    return fprintf(stderr, "Usage: %s [filename]\n", argv[0]);
-
-  printf("Start vm with bzimage: %s\n", argv[1]);
-  vm_t vm;
-  if (vm_init(&vm) < 0)
-    return throw_err("Failed to initialize guest vm");
-
-  if (vm_load(&vm, argv[1]) < 0)
-    return throw_err("Failed to load guest image");
-
-  printf("Running VM\n");
-  vm_run(&vm);
-  vm_exit(&vm);
-
-  return 0;
 }

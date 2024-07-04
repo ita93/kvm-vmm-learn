@@ -18,7 +18,7 @@ else
     VECHO = @printf
 endif
 
-OBJS := kvm-cmd.o
+OBJS := vm.o kvm-cmd.o
 OBJS := $(addprefix $(OUT)/,$(OBJS))
 deps := $(OBJS:%.o=%.o.d)
 
@@ -26,7 +26,7 @@ $(BIN): $(OBJS)
 	$(VECHO) "  LD\t$@\n"
 	$(Q)$(CC) $(LDFLAGS) -o $@ $^
 
-$(OUT)/%.o: %.c
+$(OUT)/%.o: src/%.c
 	@mkdir -p .$(OUT)
 	$(VECHO) "  CC\t$@\n"
 	$(Q)$(CC) -o $@ $(CFLAGS) -c -MMD -MF $@.d $<
