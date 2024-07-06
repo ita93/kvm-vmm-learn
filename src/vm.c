@@ -177,7 +177,8 @@ int vm_load_image(vm_t *g, const char *image_path) {
   };
 
   boot->e820_entries = idx; // number of idx, (at this point it should be 2)
-
+  
+  munmap(data, datasz);
   return 0;
 }
 
@@ -215,6 +216,8 @@ int vm_load_initrd(vm_t *v, const char *initrd_path) {
   boot->hdr.ramdisk_image = addr;
   boot->hdr.ramdisk_size = datasz;
 
+  munmap(data, datasz);
+
   return 0;
 }
 
@@ -246,9 +249,10 @@ int vm_run(vm_t *v) {
       mmap(0, run_size, PROT_READ | PROT_WRITE, MAP_SHARED, v->vcpu_fd, 0);
 
   while (1) {
-    if (ioctl(v->vcpu_fd, KVM_RUN, 0) < 0)
+    if (ioctl(v->vcpu_fd, KVM_RUN, 0) < 0){
+      munmap(run, run_size);
       return throw_err("Failed to execute kvm_run");
-
+    }
     switch (run->exit_reason) {
     case KVM_EXIT_IO:
       if (run->io.port >= COM1_PORT_BASE && run->io.port < COM1_PORT_END) {
@@ -257,9 +261,11 @@ int vm_run(vm_t *v) {
       break;
     case KVM_EXIT_SHUTDOWN:
       printf("shutdown \n");
+      munmap(run, run_size);
       return 0;
     default:
       printf("reason: %d\n", run->exit_reason);
+        munmap(run, run_size);
       return -1;
     }
   }
