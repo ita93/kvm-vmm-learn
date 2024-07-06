@@ -20,6 +20,7 @@
 
 #include "err.h"
 #include "vm.h"
+#include "serial.h"
 
 // Registers initialization
 static int vm_init_regs(vm_t *g) {
@@ -75,35 +76,35 @@ static void vm_init_cpu_id(vm_t *g) {
   ioctl(g->vcpu_fd, KVM_SET_CPUID2, &kvm_cpuid);
 }
 
-int vm_init(vm_t *g) {
+int vm_init(vm_t *v) {
   printf("Initializing VM\n");
 
-  if ((g->kvm_fd = open("/dev/kvm", O_RDWR)) < 0)
+  if ((v->kvm_fd = open("/dev/kvm", O_RDWR)) < 0)
     return throw_err("Failed to open /dev/kvm");
 
-  if ((g->vm_fd = ioctl(g->kvm_fd, KVM_CREATE_VM, 0)) < 0)
+  if ((v->vm_fd = ioctl(v->kvm_fd, KVM_CREATE_VM, 0)) < 0)
     return throw_err("Failed to create VM");
 
-  if (ioctl(g->vm_fd, KVM_SET_TSS_ADDR, 0xffffd000) < 0)
+  if (ioctl(v->vm_fd, KVM_SET_TSS_ADDR, 0xffffd000) < 0)
     return throw_err("Failed to set TSS addres");
 
   __u64 map_addr = 0xffffc000;
   // This mapping allow intel to switch between different CPU Mode
-  if (ioctl(g->vm_fd, KVM_SET_IDENTITY_MAP_ADDR, &map_addr) < 0)
+  if (ioctl(v->vm_fd, KVM_SET_IDENTITY_MAP_ADDR, &map_addr) < 0)
     return throw_err("Failed to set identity map address");
 
-  if (ioctl(g->vm_fd, KVM_CREATE_IRQCHIP, 0) < 0) {
+  if (ioctl(v->vm_fd, KVM_CREATE_IRQCHIP, 0) < 0) {
     return throw_err("Failed to create interrupt controller model");
   }
 
   struct kvm_pit_config pit = {.flags = 0};
-  if (ioctl(g->vm_fd, KVM_CREATE_PIT2, &pit) < 0)
+  if (ioctl(v->vm_fd, KVM_CREATE_PIT2, &pit) < 0)
     return throw_err("Failed to create i8254 interval timer");
 
   // Create memory for the VM
-  g->mem = mmap(NULL, RAM_SIZE, PROT_WRITE | PROT_READ,
+  v->mem = mmap(NULL, RAM_SIZE, PROT_WRITE | PROT_READ,
                 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-  if (!g->mem)
+  if (!v->mem)
     return throw_err("Failed to mmap vm memory");
 
   struct kvm_userspace_memory_region region = {
@@ -111,18 +112,19 @@ int vm_init(vm_t *g) {
       .flags = 0,
       .guest_phys_addr = 0,
       .memory_size = RAM_SIZE,
-      .userspace_addr = (__u64)g->mem,
+      .userspace_addr = (__u64)v->mem,
   };
 
   // Because the memory is smaller than 4G, it won't overlap with the MMIO
-  if (ioctl(g->vm_fd, KVM_SET_USER_MEMORY_REGION, &region) < 0)
+  if (ioctl(v->vm_fd, KVM_SET_USER_MEMORY_REGION, &region) < 0)
     return throw_err("Failed to setup user memory region");
 
-  if ((g->vcpu_fd = ioctl(g->vm_fd, KVM_CREATE_VCPU, 0)) < 0)
+  if ((v->vcpu_fd = ioctl(v->vm_fd, KVM_CREATE_VCPU, 0)) < 0)
     return throw_err("Failed to create vcpu");
 
-  vm_init_regs(g);
-  vm_init_cpu_id(g);
+  vm_init_regs(v);
+  vm_init_cpu_id(v);
+  serial_init(&v->serial);
 
   return 0;
 }
@@ -156,7 +158,7 @@ int vm_load_image(vm_t *g, const char *image_path) {
   boot->hdr.ext_loader_ver = 0x0;
   boot->hdr.cmd_line_ptr = 0x20000;
   memset(cmdline, 0, boot->hdr.cmdline_size);
-  memcpy(cmdline, "console=ttyS0", 14);
+  memcpy(cmdline, KERNEL_OPTS, sizeof(KERNEL_OPTS));
   memmove(kernel, (char *)data + setupsz, datasz - setupsz);
 
   // Setup E820 memory table to send the memory address information to initrd
@@ -216,31 +218,41 @@ int vm_load_initrd(vm_t *v, const char *initrd_path) {
   return 0;
 }
 
-void vm_exit(vm_t *g) {
-  close(g->kvm_fd);
-  close(g->vm_fd);
-  close(g->vcpu_fd);
-  munmap(g->mem, RAM_SIZE);
+int vm_irq_line(vm_t *v, int irq, int level)
+{
+  struct kvm_irq_level irq_level = {
+    {.irq = irq},
+    .level = level,
+  };
+
+  if (ioctl(v->vm_fd, KVM_IRQ_LINE, &irq_level) < 0) {
+    return throw_err("Failed to set the status of an IRQ line");
+  }
+
+  return 0;
 }
 
-int vm_run(vm_t *g) {
-  int run_size = ioctl(g->kvm_fd, KVM_GET_VCPU_MMAP_SIZE, 0);
+void vm_exit(vm_t *v) {
+  serial_exit(&v->serial);
+  close(v->kvm_fd);
+  close(v->vm_fd);
+  close(v->vcpu_fd);
+  munmap(v->mem, RAM_SIZE);
+}
+
+int vm_run(vm_t *v) {
+  int run_size = ioctl(v->kvm_fd, KVM_GET_VCPU_MMAP_SIZE, 0);
   struct kvm_run *run =
-      mmap(0, run_size, PROT_READ | PROT_WRITE, MAP_SHARED, g->vcpu_fd, 0);
+      mmap(0, run_size, PROT_READ | PROT_WRITE, MAP_SHARED, v->vcpu_fd, 0);
 
   while (1) {
-    if (ioctl(g->vcpu_fd, KVM_RUN, 0) < 0)
+    if (ioctl(v->vcpu_fd, KVM_RUN, 0) < 0)
       return throw_err("Failed to execute kvm_run");
 
     switch (run->exit_reason) {
     case KVM_EXIT_IO:
-      if (run->io.port == 0x3f8 && run->io.direction == KVM_EXIT_IO_OUT) {
-        uint32_t size = run->io.size;
-        uint64_t offset = run->io.data_offset;
-        printf("%.*s", size * run->io.count, (char *)run + offset);
-      } else if ((run->io.port == 0x3f8 + 5) &&
-                 (run->io.direction == KVM_EXIT_IO_IN)) {
-        *((char *)run + run->io.data_offset) = 0x20;
+      if (run->io.port >= COM1_PORT_BASE && run->io.port < COM1_PORT_END) {
+        serial_handle(&v->serial, run);
       }
       break;
     case KVM_EXIT_SHUTDOWN:
