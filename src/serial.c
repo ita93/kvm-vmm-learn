@@ -1,3 +1,4 @@
+#include <bits/types/siginfo_t.h>
 #include <linux/serial_reg.h>
 #include <poll.h>
 #include <pthread.h>
@@ -5,20 +6,23 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 #include <unistd.h>
+#include <signal.h>
 
 #include "serial.h"
 #include "utils.h"
 #include "vm.h"
+#include "err.h"
 
 #define SERIAL_IRQ 4
 #define IO_READ8(data) *((uint8_t *) data)
 #define IO_WRITE8(data, value) ((uint8_t *)data)[0] = value
 
-  /* global state to stop the loop of thread */
-  static volatile bool thread_stop = false;
+/* global state to stop the loop of thread */
+static volatile bool thread_stop = false;
 
-  struct serial_dev_priv {
+struct serial_dev_priv {
     uint8_t dll;
     uint8_t dlm;
     uint8_t iir;
@@ -60,27 +64,37 @@ static void serial_update_irq(serial_dev_t *s)
               iir == UART_IIR_NO_INT ? 0/*inactive */:1/*active*/);
 }
 
-static int serial_readable(serial_dev_t *s)
+static int serial_readable(serial_dev_t *s, int timeout)
 {
   struct pollfd pollfd = (struct pollfd) {
     .fd = s->infd,
     .events = POLLIN,
   };
 
-  return (poll(&pollfd, 1, 0) > 0) && (pollfd.revents & POLLIN);
+  return (poll(&pollfd, 1, timeout) > 0) && (pollfd.revents & POLLIN);
 }
 
-static void serial_console(serial_dev_t *s)
+#define FREQ_NS ((int) (1.0e6))
+#define NS_PER_SEC ((int)(1.0e9))
+
+static void *serial_thread(serial_dev_t *s)
+{
+  while (!__atomic_load_n(&thread_stop, __ATOMIC_RELAXED)) {
+    if (serial_readable(s, -1)) 
+      pthread_kill((pthread_t)s->main_tid, SIGUSR1);
+  }
+
+  return NULL;
+}
+
+void serial_console(serial_dev_t *s)
 {
   struct serial_dev_priv *priv = (struct serial_dev_priv *)s->priv;
 
-  while (!__atomic_load_n(&thread_stop, __ATOMIC_RELAXED)) {
-    pthread_mutex_lock(&s->lock);
-
     if (priv->lsr & UART_LSR_DR || !fifo_is_empty(&priv->rx_buf)) 
-      goto unlock;
+      return;
 
-    while (!fifo_is_full(&priv->rx_buf) && serial_readable(s)) {
+    while (!fifo_is_full(&priv->rx_buf) && serial_readable(s, 0)) {
       char c;
       if (read(s->infd, &c, 1) == -1)
         break;
@@ -89,9 +103,6 @@ static void serial_console(serial_dev_t *s)
       priv->lsr |= UART_LSR_DR;
     }
     serial_update_irq(s);
-  unlock:
-    pthread_mutex_unlock(&s->lock);
-  }
 }
 
 static void serial_in(serial_dev_t *s, uint16_t offset, void *data)
@@ -193,16 +204,38 @@ static void serial_out(serial_dev_t *s, uint16_t offset, void *data) {
   pthread_mutex_unlock(&s->lock);
 }
 
-void serial_init(serial_dev_t *s)
+static void handler(int sig, siginfo_t *si, void *uc) {}
+
+int serial_init(serial_dev_t *s)
 {
+  struct sigaction sa;
+  sigset_t mask;
+  sa.sa_flags = SA_SIGINFO;
+  sa.sa_sigaction = handler;
+
+  sigemptyset(&sa.sa_mask);
+  if (sigaction(SIGUSR1, &sa, NULL) == -1)
+    return throw_err("Failed to create signal handler");
+
+  /* Block timer signal temporarity */
+  sigemptyset(&mask);
+  sigaddset(&mask, SIGUSR1);
+  if (sigprocmask(SIG_SETMASK, &mask, NULL) == -1)
+    return throw_err("Failed to block timer signal");
+
   *s = (serial_dev_t) {
     .priv = (void *)&serial_dev_priv,
+    .main_tid = pthread_self(),
+    .infd = STDIN_FILENO,
   };
 
-  pthread_mutex_init(&s->lock, NULL);
-  s->infd = STDIN_FILENO;
   // create a thread which accepts serial input
-  pthread_create(&s->worker_tid, NULL, (void *)serial_console, (void*)s);
+  pthread_create(&s->worker_tid, NULL, (void *)serial_thread, (void*)s);
+  /*Unlock the timer signal, so that timer notification can be delivered */
+  if (sigprocmask(SIG_UNBLOCK, &mask, NULL) == -1)
+    return throw_err("Failed to unblock timer singal");
+
+  return 0;
 }
 
 void serial_handle(serial_dev_t *s, struct kvm_run *r)

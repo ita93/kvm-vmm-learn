@@ -124,7 +124,8 @@ int vm_init(vm_t *v) {
 
   vm_init_regs(v);
   vm_init_cpu_id(v);
-  serial_init(&v->serial);
+  if (serial_init(&v->serial))
+    return throw_err("Failed to init UART device");
 
   return 0;
 }
@@ -249,7 +250,8 @@ int vm_run(vm_t *v) {
       mmap(0, run_size, PROT_READ | PROT_WRITE, MAP_SHARED, v->vcpu_fd, 0);
 
   while (1) {
-    if (ioctl(v->vcpu_fd, KVM_RUN, 0) < 0){
+    int err = ioctl(v->vcpu_fd, KVM_RUN,0);
+    if ( err < 0 && (errno != EINTR && errno != EAGAIN)) {
       munmap(run, run_size);
       return throw_err("Failed to execute kvm_run");
     }
@@ -258,6 +260,9 @@ int vm_run(vm_t *v) {
       if (run->io.port >= COM1_PORT_BASE && run->io.port < COM1_PORT_END) {
         serial_handle(&v->serial, run);
       }
+      break;
+    case KVM_EXIT_INTR:
+      serial_console(&v->serial);
       break;
     case KVM_EXIT_SHUTDOWN:
       printf("shutdown \n");
