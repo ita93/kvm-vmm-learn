@@ -2,6 +2,7 @@
 #define VM_H
 
 #include "serial.h"
+#include "pci.h"
 
 #define RAM_SIZE (1 << 30)
 #define KERNEL_OPTS "console=ttyS0"
@@ -10,6 +11,9 @@ typedef struct {
   int kvm_fd, vm_fd, vcpu_fd;
   void *mem;
   serial_dev_t serial;
+  struct bus mmio_bus;
+  struct bus io_bus;
+  struct pci pci;
 } vm_t;
 
 int vm_init(vm_t *v);

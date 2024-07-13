@@ -20,6 +20,7 @@
 
 #include "err.h"
 #include "vm.h"
+#include "pci.h"
 #include "serial.h"
 
 // Registers initialization
@@ -244,6 +245,26 @@ void vm_exit(vm_t *v) {
   munmap(v->mem, RAM_SIZE);
 }
 
+void vm_handle_io(vm_t *v, struct kvm_run *run)
+{
+  uint64_t addr = run->io.port;
+  void *data = (void *)run + run->io.data_offset;
+  bool is_write = run->io.direction == KVM_EXIT_IO_OUT;
+
+  if (run->io.port >= COM1_PORT_BASE && run->io.port < COM1_PORT_END) {
+    serial_handle(&v->serial, run);
+  } else {
+    for (int i = 0; i < run->io.count; i++) {
+      bus_handle_io(&v->io_bus, data, is_write, addr, run->io.size);
+      addr += run->io.size;
+    }
+  }
+}
+
+void vm_handle_mmio(vm_t *v, struct kvm_run *run) {
+  bus_handle_io(&v->mmio_bus, run->mmio.data, run->mmio.is_write, run->mmio.phys_addr, run->mmio.len);
+}
+
 int vm_run(vm_t *v) {
   int run_size = ioctl(v->kvm_fd, KVM_GET_VCPU_MMAP_SIZE, 0);
   struct kvm_run *run =
@@ -257,9 +278,10 @@ int vm_run(vm_t *v) {
     }
     switch (run->exit_reason) {
     case KVM_EXIT_IO:
-      if (run->io.port >= COM1_PORT_BASE && run->io.port < COM1_PORT_END) {
-        serial_handle(&v->serial, run);
-      }
+      vm_handle_io(v, run);
+      break;
+    case KVM_EXIT_MMIO:
+      vm_handle_mmio(v, run);
       break;
     case KVM_EXIT_INTR:
       serial_console(&v->serial);
