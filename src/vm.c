@@ -166,7 +166,7 @@ int vm_load_image(vm_t *g, const char *image_path) {
   // Setup E820 memory table to send the memory address information to initrd
 
   unsigned int idx = 0;
-  boot->e820_table[idx] = (struct boot_e820_entry){
+  /*boot->e820_table[idx] = (struct boot_e820_entry){
       .addr = 0x0,
       .size = ISA_START_ADDRESS - 1,
       .type = E820_RAM,
@@ -176,8 +176,32 @@ int vm_load_image(vm_t *g, const char *image_path) {
       .addr = ISA_END_ADDRESS,
       .size = RAM_SIZE - ISA_END_ADDRESS,
       .type = E820_RAM,
+  };*/
+
+  boot->e820_table[idx++] = (struct boot_e820_entry) {
+    .addr = 0x0,
+    .size = 0x9fc00,
+    .type = E820_RAM,
   };
 
+  boot->e820_table[idx++] = (struct boot_e820_entry) {
+    .addr = 0x9fc00,
+    .size = 1 << 10,
+    .type = E820_RESERVED,
+  };
+
+  boot->e820_table[idx++] = (struct boot_e820_entry) {
+    .addr = 0xf0000,
+    .size = 0xffff,
+    .type = E820_RESERVED,
+  };
+  
+  boot->e820_table[idx++] = (struct boot_e820_entry) {
+    .addr = 0x100000,
+    .size = RAM_SIZE - ISA_END_ADDRESS,
+    .type = E820_RAM,
+  };
+  
   boot->e820_entries = idx; // number of idx, (at this point it should be 2)
   
   munmap(data, datasz);
@@ -250,6 +274,11 @@ void vm_handle_io(vm_t *v, struct kvm_run *run)
   uint64_t addr = run->io.port;
   void *data = (void *)run + run->io.data_offset;
   bool is_write = run->io.direction == KVM_EXIT_IO_OUT;
+
+  if (run->io.port == 0x61 && !is_write) {
+    uint8_t *u8_data = (uint8_t*)data;
+    *u8_data = 0x20;
+  }
 
   if (run->io.port >= COM1_PORT_BASE && run->io.port < COM1_PORT_END) {
     serial_handle(&v->serial, run);
