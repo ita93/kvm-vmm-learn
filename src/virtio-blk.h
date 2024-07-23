@@ -5,3 +5,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "diskimg.h"
+#include "pci.h"
+#include "virtio-pci.h"
+#include "virtq.h"
