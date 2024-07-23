@@ -24,9 +24,9 @@ struct virtq_info {
 
 /* packed virtqueue */
 struct virtq {
-	struct vring_packed_desc *desc_ring;
-	struct vring_packed_desc_event *device_event;
-	struct vring_packed_desc_event *guest_event;
+	struct vring_packed_desc *desc_ring;			// descriptor ring
+	struct vring_packed_desc_event *device_event;		// used ring (device area)
+	struct vring_packed_desc_event *guest_event;		// available ring (driver area)
 	struct virtq_info info;
 	void *dev;
 	uint16_t next_avail_idx;
