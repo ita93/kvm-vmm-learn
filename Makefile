@@ -19,7 +19,7 @@ else
     VECHO = @printf
 endif
 
-OBJS := serial.o vm.o kvm-cmd.o pci.o virtq.o diskimg.o
+OBJS := serial.o vm.o kvm-cmd.o pci.o virtq.o diskimg.o virtio-pci.o virtio-blk.o
 OBJS := $(addprefix $(OUT)/,$(OBJS))
 deps := $(OBJS:%.o=%.o.d)
 
